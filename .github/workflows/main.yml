@@ -1,0 +1,285 @@
+# ========================================
+# GKI 内核构建主入口（纯净版 - 无 KernelSU）
+# ========================================
+
+name: 构建内核
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ==================== 发布配置 ====================
+      release_type:
+        description: "发布类型"
+        type: choice
+        options:
+          - Actions
+          - Pre-Release
+          - Release
+        default: Actions
+
+      # ==================== 可选配置 ====================
+      version:
+        description: "自定义版本名 (可选)"
+        type: string
+        default: ""
+        required: false
+      build_time:
+        description: "自定义构建时间 (可选，N或留空=当前UTC)"
+        type: string
+        default: "Sun Dec 01 08:10:00 UTC 2024"
+        required: false
+
+      # ==================== 功能开关 ====================
+      use_zram:
+        description: "启用 ZRAM 增强算法"
+        type: boolean
+        default: false
+      use_bbg:
+        description: "启用 BBG 防格机"
+        type: boolean
+        default: false
+      use_rekernel:
+        description: "启用 Re-Kernel 驱动"
+        type: boolean
+        default: false
+
+      # ==================== 构建版本选择 ====================
+      build_a12_5_10:
+        description: "Android 12 - 5.10"
+        type: boolean
+        default: false
+      build_a13_5_15:
+        description: "Android 13 - 5.15"
+        type: boolean
+        default: false
+      build_a14_6_1:
+        description: "Android 14 - 6.1"
+        type: boolean
+        default: false
+      build_a15_6_6:
+        description: "Android 15 - 6.6"
+        type: boolean
+        default: false
+      build_a16_6_12:
+        description: "Android 16 - 6.12"
+        type: boolean
+        default: false
+      build_all:
+        description: "构建全部版本"
+        type: boolean
+        default: true
+
+jobs:
+  # ==================== Android 12 - 5.10 构建 ====================
+  build-a12-5-10:
+    if: inputs.build_a12_5_10 || inputs.build_all
+    uses: ./.github/workflows/kernel-a12-5-10.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_rekernel: ${{ inputs.use_rekernel }}
+
+  # ==================== Android 13 - 5.15 构建 ====================
+  build-a13-5-15:
+    if: inputs.build_a13_5_15 || inputs.build_all
+    uses: ./.github/workflows/kernel-a13-5-15.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_rekernel: ${{ inputs.use_rekernel }}
+
+  # ==================== Android 14 - 6.1 构建 ====================
+  build-a14-6-1:
+    if: inputs.build_a14_6_1 || inputs.build_all
+    uses: ./.github/workflows/kernel-a14-6-1.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_rekernel: ${{ inputs.use_rekernel }}
+
+  # ==================== Android 15 - 6.6 构建 ====================
+  build-a15-6-6:
+    if: inputs.build_a15_6_6 || inputs.build_all
+    uses: ./.github/workflows/kernel-a15-6-6.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_rekernel: ${{ inputs.use_rekernel }}
+
+  # ==================== Android 16 - 6.12 构建 ====================
+  build-a16-6-12:
+    if: inputs.build_a16_6_12 || inputs.build_all
+    uses: ./.github/workflows/kernel-a16-6-12.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_rekernel: ${{ inputs.use_rekernel }}
+
+  # ==================== 创建发布 ====================
+  release:
+    if: ${{ always() && !cancelled() && inputs.release_type != 'Actions' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    needs:
+      - build-a12-5-10
+      - build-a13-5-15
+      - build-a14-6-1
+      - build-a15-6-6
+      - build-a16-6-12
+
+    env:
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: 设置构建信息
+        run: |
+          echo "LZ4_STATUS=${{ inputs.use_zram && '开启' || '未开启' }}" >> $GITHUB_ENV
+          echo "BBG_STATUS=${{ inputs.use_bbg && '支持' || '不支持' }}" >> $GITHUB_ENV
+          DATE_STR="${{ inputs.build_time }}"
+          if [[ -z "$DATE_STR" || "$DATE_STR" == "N" || "$DATE_STR" == "n" ]]; then
+            DATE_STR="$(TZ='UTC' date +'%Y-%m-%d %H:%M:%S UTC')"
+          fi
+          echo "BUILD_DATE=$DATE_STR" >> $GITHUB_ENV
+          echo "RELEASE_NAME=GKI 纯净内核 - $DATE_STR" >> $GITHUB_ENV
+
+      - name: 验证构建状态
+        run: |
+          failed=0
+          check_build() {
+            local selected="$1" job_name="$2" result="$3"
+            if [[ "$selected" == "true" && "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "选中的构建任务 $job_name 失败 (结果: $result)"
+              failed=1
+            fi
+          }
+          check_build "${{ inputs.build_a12_5_10 || inputs.build_all }}" "build-a12-5-10" "${{ needs.build-a12-5-10.result }}"
+          check_build "${{ inputs.build_a13_5_15 || inputs.build_all }}" "build-a13-5-15" "${{ needs.build-a13-5-15.result }}"
+          check_build "${{ inputs.build_a14_6_1 || inputs.build_all }}" "build-a14-6-1" "${{ needs.build-a14-6-1.result }}"
+          check_build "${{ inputs.build_a15_6_6 || inputs.build_all }}" "build-a15-6-6" "${{ needs.build-a15-6-6.result }}"
+          check_build "${{ inputs.build_a16_6_12 || inputs.build_all }}" "build-a16-6-12" "${{ needs.build-a16-6-12.result }}"
+          [[ "$failed" -ne 0 ]] && exit 1 || true
+
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 生成发布说明
+        run: |
+          cat > release_body.md << EOF
+          ## 📦 本次发布内容 / Release Contents
+
+          **纯净 GKI 内核** - 无 KernelSU / SUSFS
+
+          ### ✨ 功能特性 / Features
+
+          | 组件 / Component | 状态 / Status |
+          |:---|:---|
+          | KernelSU | ❌ 未集成 |
+          | SUSFS | ❌ 未集成 |
+          | BBG 安全补丁 | ${{ env.BBG_STATUS }} |
+          | ZRAM LZ4 增强 | ${{ env.LZ4_STATUS }} |
+
+          ### 📅 构建时间 / Build Time
+
+          ${{ env.BUILD_DATE }}
+
+          ---
+
+          > [!NOTE]
+          > 此内核为 Google 官方 GKI 源码编译，**未集成 KernelSU 或 SUSFS**。
+          > 如需 root 权限，请在刷入后自行修补 boot 镜像。
+          >
+          > This kernel is built from Google's official GKI source **without KernelSU or SUSFS**.
+          > For root access, patch the boot image manually after flashing.
+
+          <details>
+          <summary>📋 刷入指南 / Flashing Guide</summary>
+
+          1. 下载对应你设备的内核版本
+          2. 使用 fastboot 刷入: `fastboot flash boot boot.img`
+          3. 重启设备
+
+          1. Download the kernel matching your device
+          2. Flash with fastboot: `fastboot flash boot boot.img`
+          3. Reboot
+
+          </details>
+
+          ---
+
+          **LTO**: thin
+
+          📂 点击下方 **Assets** 展开下载 / Click **Assets** below to download
+          EOF
+
+      - name: 生成版本标签
+        run: |
+          DATE_TAG=$(TZ='UTC' date +'%Y.%m.%d')
+          LATEST_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags --jq '.[0].name' 2>/dev/null | grep "^${DATE_TAG}-r" || echo "")
+
+          if [ -z "$LATEST_TAG" ]; then
+            NEW_TAG="${DATE_TAG}-r1"
+          else
+            NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2+1; printf "%s-r%d", $1, suffix}')
+          fi
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
+
+          git tag "$NEW_TAG"
+          git push --tags
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v8
+        with:
+          path: ./downloaded-artifacts
+
+      - name: 创建 GitHub Release
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.release_type }}" == "Pre-Release" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "$NEW_TAG" \
+            --title "${{ env.RELEASE_NAME }}" \
+            --notes-file release_body.md \
+            $PRERELEASE_FLAG
+
+      - name: 上传内核产物
+        run: |
+          for file in ./downloaded-artifacts/kernel-*/*; do
+            [ -d "$file" ] && continue
+            echo "上传 $file..."
+            gh release upload "$NEW_TAG" "$file"
+          done
+
+      - name: 构建摘要
+        run: |
+          echo "## 发布已创建" >> $GITHUB_STEP_SUMMARY
+          echo "- **标签**: $NEW_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "- **类型**: ${{ inputs.release_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **链接**: https://github.com/$REPO_OWNER/$REPO_NAME/releases/tag/$NEW_TAG" >> $GITHUB_STEP_SUMMARY
