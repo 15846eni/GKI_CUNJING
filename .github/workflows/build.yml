@@ -7,7 +7,6 @@ permissions:
 on:
   workflow_call:
     inputs:
-      # ==================== 基础配置 ====================
       android_version:
         required: true
         type: string
@@ -20,8 +19,6 @@ on:
       os_patch_level:
         required: true
         type: string
-
-      # ==================== 可选配置 ====================
       version:
         required: false
         type: string
@@ -32,8 +29,6 @@ on:
         required: false
         type: string
         default: "Sun Dec 01 08:10:00 UTC 2024"
-
-      # ==================== 功能开关 ====================
       use_zram:
         required: true
         type: boolean
@@ -274,7 +269,7 @@ jobs:
             GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
             if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
               echo "应用 glibc 2.38 兼容性修复..."
-              sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
+              sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)” OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
 
               if [[ "${{ inputs.kernel_version }}" == "5.10" || "${{ inputs.kernel_version }}" == "5.15" ]]; then
                 sed -i '/char \*buf = NULL;/a int i;' tools/lib/subcmd/parse-options.c 2>/dev/null || true
@@ -421,12 +416,10 @@ jobs:
           rm -rf "$TMP_REKERNEL"
           git clone --depth 1 https://github.com/Sakion-Team/Re-Kernel.git "$TMP_REKERNEL"
 
-          # 准备驱动源码
           mkdir -p common/drivers/rekernel
           cp "$TMP_REKERNEL/LKM-Source/rekernel.c" common/drivers/rekernel/
           cp "$TMP_REKERNEL/LKM-Source/rekernel.h" common/drivers/rekernel/
 
-          # 生成构建配置
           cat > common/drivers/rekernel/Kconfig << 'EOF'
           menu "Re:Kernel"
           config REKERNEL
@@ -447,7 +440,6 @@ jobs:
           ccflags-$(CONFIG_REKERNEL_NETWORK) += -DNETWORK_FILTER
           EOF
 
-          # 挂载到驱动树
           if ! grep -qF 'source "drivers/rekernel/Kconfig"' common/drivers/Kconfig; then
             sed -i '/^endmenu$/i source "drivers/rekernel/Kconfig"' common/drivers/Kconfig
           fi
@@ -455,19 +447,15 @@ jobs:
             echo 'obj-$(CONFIG_REKERNEL) += rekernel/' >> common/drivers/Makefile
           fi
 
-          # 启用内核版本宏
           REKERNEL_H="common/drivers/rekernel/rekernel.h"
           VERSION_MACRO="KERNEL_$(echo "${{ inputs.kernel_version }}" | tr '.' '_')"
           if grep -q "^// #define ${VERSION_MACRO}$" "$REKERNEL_H"; then
             sed -i "s|^// #define ${VERSION_MACRO}$|#define ${VERSION_MACRO}|" "$REKERNEL_H"
           fi
 
-          # 修正头文件包含路径（适配 in-tree 编译）
           sed -i 's|#include <../android/binder_internal.h>|#include "../../drivers/android/binder_internal.h"|g' common/drivers/rekernel/rekernel.c
-          # 补齐 binder_internal 依赖（避免 5.10 下 DEFINE_SHOW_ATTRIBUTE 报错）
           grep -qF '#include <linux/seq_file.h>' common/drivers/rekernel/rekernel.c || sed -i '/#include <trace\/hooks\/signal.h>/a #include <linux/seq_file.h>' common/drivers/rekernel/rekernel.c
 
-          # 配置 defconfig（幂等）
           grep -q '^CONFIG_REKERNEL=y$' "$DEFCONFIG" || echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
           grep -q '^CONFIG_REKERNEL_NETWORK=y$' "$DEFCONFIG" || echo "CONFIG_REKERNEL_NETWORK=y" >> "$DEFCONFIG"
 
@@ -534,7 +522,6 @@ jobs:
           echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
 
-          # 统一处理 mkcompile_h 补丁
           f="$KERNEL_ROOT/common/scripts/mkcompile_h"
           if [ -f "$f" ]; then
             if [[ "${{ inputs.kernel_version }}" == "5.10" || "${{ inputs.kernel_version }}" == "5.15" ]]; then
@@ -551,47 +538,42 @@ jobs:
           fi
 
       - name: 编译内核
-  uses: nick-fields/retry@v4
-  with:
-    timeout_minutes: 30
-    max_attempts: 3
-    retry_on: timeout
-    command: |
-      set -ex
-      cd "$KERNEL_ROOT"
+        run: |
+          set -ex
+          cd "$KERNEL_ROOT"
 
-      sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64
-      sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64
-      sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64
+          sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64
+          sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64
+          sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64
 
-      if [ -f "build/build.sh" ]; then
-        LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
-        strings "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" | grep 'Linux version'
-      else
-        LTO_FLAG="--lto=thin"
-        if [ "${{ inputs.kernel_version }}" = "6.12" ]; then
-          LTO_FLAG="--lto=none"
-        fi
+          if [ -f "build/build.sh" ]; then
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
+            strings "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" | grep 'Linux version'
+          else
+            LTO_FLAG="--lto=thin"
+            if [ "${{ inputs.kernel_version }}" = "6.12" ]; then
+              LTO_FLAG="--lto=none"
+            fi
 
-        # 提取 defconfig 差异，只在有修改时才传入 fragment
-        FRAG="common/arch/arm64/configs/ksu.fragment"
-        diff "$DEFCONFIG.orig" "$DEFCONFIG" | grep '^>' | sed 's/^> //; s/^[[:space:]]*//' > "$FRAG" || true
-        cp "$DEFCONFIG.orig" "$DEFCONFIG"
-        
-        FRAG_FLAG=""
-        if [ -s "$FRAG" ]; then
-          echo "=== Fragment 内容 ==="
-          cat "$FRAG"
-          echo "========================="
-          FRAG_FLAG="--defconfig_fragment=//common:arch/arm64/configs/ksu.fragment"
-        else
-          echo "无配置修改，使用原始 defconfig"
-          rm -f "$FRAG"
-        fi
+            FRAG="common/arch/arm64/configs/noksu.fragment"
+            diff "$DEFCONFIG.orig" "$DEFCONFIG" | grep '^>' | sed 's/^> //; s/^[[:space:]]*//' > "$FRAG" || true
+            cp "$DEFCONFIG.orig" "$DEFCONFIG"
 
-        tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
-        strings ./bazel-bin/common/kernel_aarch64/Image | grep 'Linux version'
-      fi
+            FRAG_FLAG=""
+            if [ -s "$FRAG" ]; then
+              echo "=== Fragment 内容 ==="
+              cat "$FRAG"
+              echo "========================="
+              FRAG_FLAG="--defconfig_fragment=//common:arch/arm64/configs/noksu.fragment"
+            else
+              echo "无配置修改，使用原始 defconfig"
+              rm -f "$FRAG"
+            fi
+
+            tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
+            strings ./bazel-bin/common/kernel_aarch64/Image | grep 'Linux version'
+          fi
+
       - name: 准备 Boot 镜像
         run: |
           mkdir -p bootimgs
